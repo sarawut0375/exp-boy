@@ -11,8 +11,8 @@
 <script>
   const SHEET_ID  = '1NYW07QLxzJ_sP9jN0KdchMIrIYAof8MHIgIfh-I0hRA';   // ← ใส่ ID ของ Sheet
   const API_KEY = 'AIzaSyB1fILVRiJv3OzyFHVEQJUzU4AqOQsdIz8';
-  const RANGE      = 'Sheet1!A:F';   // ← A=ID, B=วันที่, C=รายการ, D=หมวดหมู่, E=รายรับ, F=รายจ่าย
-  const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwM3tis-rVyAHebu3y--7ux-jkdAcJRnXdHo0wtVwNk5Y9psx2QNURvg3G4eX_X_STvvQ/exec';
+  const RANGE      = 'Sheet1!A:G';   // ← A=ID, B=วันที่, C=รายการ, D=หมวดหมู่, E=รายรับ, F=รายจ่าย
+  const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycby3Vyueag09KtGHYi0FWkowjgxtsn0pUcye6kQ8efNKE4s0-4ihjNClhwr26oVFpWtfrw/exec';
 </script>
 <!-- ==================================================== -->
 
@@ -189,8 +189,9 @@ tr:hover .del-btn { opacity:1; }
     <div class="tbl-wrap">
       <table>
         <thead><tr>
-          <th>วันที่</th><th>รายการ</th><th>หมวดหมู่</th>
-          <th class="r">รายรับ</th><th class="r">รายจ่าย</th><th></th>
+ 	<th>วันที่</th><th>รายการ</th><th>หมวดหมู่</th>
+  	<th class="r">รายรับ</th><th class="r">รายจ่าย</th>
+  	<th class="r">รูป</th><th></th>
         </tr></thead>
         <tbody id="txTable"><tr><td colspan="6" class="state">กำลังโหลด...</td></tr></tbody>
       </table>
@@ -249,12 +250,15 @@ tr:hover .del-btn { opacity:1; }
    ══════════════════════════════════════════════════ */
 let CAT_COLORS = {
   'อาหาร':    { hex:'#1D9E75', light:'#E1F5EE', dark:'#0F6E56' },
-  'เดินทาง':  { hex:'#378ADD', light:'#E6F1FB', dark:'#185FA5' },
   'ช้อปปิ้ง': { hex:'#D85A30', light:'#FAECE7', dark:'#993C1D' },
-  'ค่าไฟ':    { hex:'#EF9F27', light:'#FAEEDA', dark:'#854F0B' },
+  'บันเทิง':  { hex:'#7F77DD', light:'#EEEDFE', dark:'#534AB7' },
+  'เดินทาง':  { hex:'#378ADD', light:'#E6F1FB', dark:'#185FA5' },
+  'ครอบครัว': { hex:'#E05C8A', light:'#FBE7EF', dark:'#A53C63' },
   'รายได้':   { hex:'#639922', light:'#EAF3DE', dark:'#3B6D11' },
-  'อื่นๆ':    { hex:'#7F77DD', light:'#EEEDFE', dark:'#534AB7' },
 };
+// หมวดหมู่หลัก 6 หมวด (หมวดที่สร้างเองด้วย "+" จะเพิ่มต่อท้ายได้)
+const MAIN_CATEGORIES = ['อาหาร','ช้อปปิ้ง','บันเทิง','เดินทาง','ครอบครัว','รายได้'];
+const FALLBACK_CAT = 'ช้อปปิ้ง';
 const PRESET_HEX = ['#1D9E75','#378ADD','#D85A30','#EF9F27','#639922','#7F77DD','#E05C8A','#20A8C3','#C97B2A','#6BAF3C','#9B59B6','#E74C3C','#16A085','#D35400','#2980B9','#8E44AD','#27AE60','#F39C12'];
 const EXTRA = ['#E05C8A','#20A8C3','#C97B2A','#6BAF3C','#9B59B6','#E74C3C','#16A085','#D35400'];
 
@@ -286,22 +290,127 @@ let activeMonth= 'all';
 let pieChart   = null;
 let editingCat = null;
 
-/* ══════════════════════════════════════════════════
-   API — ใช้ await แทน no-cors เพื่อให้รู้ผลจริง
-   ══════════════════════════════════════════════════ */
+/* ══ TOAST ══════════════════════════════════════ */
+function toast(msg, ok=true) {
+  const t = document.createElement('div');
+  t.textContent = msg;
+  t.style.cssText = `position:fixed;bottom:24px;left:50%;transform:translateX(-50%);
+    background:${ok?'#1D9E75':'#D85A30'};color:#fff;padding:8px 20px;
+    border-radius:20px;font-size:13px;z-index:999;opacity:0;transition:opacity .3s;
+    pointer-events:none;white-space:nowrap`;
+  document.body.appendChild(t);
+  requestAnimationFrame(()=>{
+    t.style.opacity='1';
+    setTimeout(()=>{ t.style.opacity='0'; setTimeout(()=>t.remove(),300); }, 2000);
+  });
+}
+
+/* ══ API ════════════════════════════════════════ */
 async function api(payload) {
   try {
-    // ใช้ no-cors เพราะ Apps Script ไม่ส่ง CORS header กลับมา
     await fetch(SCRIPT_URL, {
       method: 'POST',
       mode:   'no-cors',
       body:   JSON.stringify(payload)
     });
+    if (payload.action !== 'add') toast('✓ บันทึกแล้ว');
     return true;
   } catch(e) {
-    console.error('API error:', e);
+    toast('⚠️ บันทึกไม่สำเร็จ กรุณาลองใหม่', false);
     return false;
   }
+}
+
+/* ══ DELETE ROW ═════════════════════════════════ */
+async function deleteRow(idx) {
+  const r = allData[idx];
+  if (!r) return;
+  if (!confirm(`ลบ "${r.item || 'รายการนี้'}" ออก?`)) return;
+  allData.splice(idx, 1);
+  render();
+  await api({ action:'delete', id:r.id });
+  setTimeout(loadData, 1500); // reload เพื่อ sync
+}
+
+/* ══ EDIT CELL ══════════════════════════════════ */
+function editCell(td, idx, field) {
+  const r = allData[idx];
+  if (!r) return;
+  let input;
+  if (field === 'category') {
+    input = document.createElement('select');
+    input.className = 'edit-select';
+    Object.keys(CAT_COLORS).forEach(cat => {
+      const op = document.createElement('option');
+      op.value = cat; op.textContent = cat;
+      if (cat === r.category) op.selected = true;
+      input.appendChild(op);
+    });
+  } else if (field === 'date') {
+    input = document.createElement('input');
+    input.className = 'edit-input';
+    input.type  = 'date';
+    input.value = r.date;
+  } else {
+    input = document.createElement('input');
+    input.className = 'edit-input';
+    input.type  = (field==='income'||field==='expense') ? 'number' : 'text';
+    input.value = field==='income' ? r.income : field==='expense' ? r.expense : r.item;
+  }
+  td.innerHTML = '';
+  td.appendChild(input);
+  input.focus();
+  if (input.select) input.select();
+
+  async function save() {
+    const val = input.value.trim();
+    if (field === 'date') {
+      // [FIX] ใช้ datetimeFull แทน datetime
+      const oldTime = r.datetimeFull ? r.datetimeFull.slice(11,19) : '00:00:00';
+      r.date         = val || r.date;
+      r.datetimeFull = val + 'T' + oldTime + '+07:00';
+    } else if (field === 'item')     { r.item     = val || r.item; }
+    else if (field === 'category')   { r.category = val; }
+    else if (field === 'income')     { r.income  = parseFloat(val)||0; if(r.income>0)  r.expense=0; }
+    else if (field === 'expense')    { r.expense = parseFloat(val)||0; if(r.expense>0) r.income=0; }
+    render();
+    await api({
+      action:'update', id:r.id,
+      date:r.date, item:r.item,
+      category:r.category,
+      income:r.income, expense:r.expense
+    });
+  }
+
+  input.addEventListener('blur', save);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter')  { e.preventDefault(); input.blur(); }
+    if (e.key === 'Escape') render();
+  });
+}
+
+/* ══ ADD ROW ════════════════════════════════════ */
+async function saveAddRow() {
+  const date   = document.getElementById('arDate').value;
+  const item   = document.getElementById('arItem').value.trim();
+  const cat    = document.getElementById('arCat').value;
+  const type   = document.querySelector('input[name=arType]:checked').value;
+  const amount = parseFloat(document.getElementById('arAmount').value) || 0;
+  if (!item)   { document.getElementById('arItem').focus(); return; }
+  if (!amount) { document.getElementById('arAmount').focus(); return; }
+
+  const newRow = {
+    id: 'temp_' + Date.now(), date, item, category: cat,
+    income:  type==='income'  ? amount : 0,
+    expense: type==='expense' ? amount : 0,
+    datetimeFull: date + 'T00:00:00+07:00'
+  };
+  allData.push(newRow);
+  document.getElementById('addRowBg').classList.remove('open');
+  render();
+  toast('⏳ กำลังเพิ่มรายการ...');
+  await api({ action:'add', date, item, category:cat, income:newRow.income, expense:newRow.expense });
+  setTimeout(loadData, 2000); // reload รับ ID จริงจาก Sheet
 }
 
 /* ══════════════════════════════════════════════════
@@ -353,16 +462,23 @@ async function loadData() {
 return {
   id:           hasId ? r[0] : '',
   date:         pd && !isNaN(pd.getTime()) ? pd.toISOString().slice(0,10) : '',
-  datetimeFull: pd && !isNaN(pd.getTime()) ? pd.toISOString() : '',  // ← เพิ่มบรรทัดนี้
+  datetimeFull: pd && !isNaN(pd.getTime()) ? pd.toISOString() : '',
   item:         (hasId ? r[2] : r[1]) || '',
-  category:     (hasId ? r[3] : r[2]) || 'อื่นๆ',
+  category:     (hasId ? r[3] : r[2]) || FALLBACK_CAT,
   income:       parseFloat(((hasId ? r[4] : r[3])+'').replace(/,/g,'')) || 0,
   expense:      parseFloat(((hasId ? r[5] : r[4])+'').replace(/,/g,'')) || 0,
+  fileUrl:      (hasId ? r[6] : '') || '',   // [NEW]
 };
   })
   .filter(r => r.date); // กรองแถวที่ parse วันที่ไม่ได้ออก
 
     allData.forEach(r => getOrCreate(r.category));
+    // ลบหมวดที่ค้างอยู่ (ไม่ใช่หมวดหลัก และไม่มีในข้อมูลแล้ว) ออกจาก palette
+    const present = new Set(allData.map(r => r.category));
+    Object.keys(CAT_COLORS).forEach(c => {
+      if (MAIN_CATEGORIES.indexOf(c) === -1 && !present.has(c)) delete CAT_COLORS[c];
+    });
+    savePalette();
     activeCats = new Set(Object.keys(CAT_COLORS));
     render();
   } catch(err) {
@@ -478,95 +594,37 @@ function buildBars(catExp) {
 
 function buildTable(rows) {
   const tbody = document.getElementById('txTable');
-  if (!rows.length) { tbody.innerHTML=`<tr><td colspan="6" class="state">ไม่มีรายการ</td></tr>`; return; }
-  tbody.innerHTML = [...rows].sort((a,b)=>b.date.localeCompare(a.date)).map((r,si) => {
+  if (!rows.length) { tbody.innerHTML=`<tr><td colspan="7" class="state">ไม่มีรายการ</td></tr>`; return; }
+  const _ts = x => { const d = new Date(x.datetimeFull || x.date); return isNaN(d.getTime()) ? 0 : d.getTime(); };
+  tbody.innerHTML = [...rows].sort((a,b)=>_ts(b)-_ts(a)).map((r,si) => {
     const col  = getColor(r.category);
-    const d = new Date(r.datetimeFull || r.date);
+    const d    = new Date(r.datetimeFull || r.date);
     const dStr = isNaN(d) ? r.date : d.toLocaleString('th-TH', {
       day:'numeric', month:'short', year:'2-digit',
       hour:'2-digit', minute:'2-digit', timeZone:'Asia/Bangkok'
     });
-    const tb   = r.income>0 ? `<span class="bdg bdg-i">รายรับ</span>` : `<span class="bdg bdg-e">รายจ่าย</span>`;
-    const cb   = `<span class="bdg" style="background:${col.light};color:${col.dark}">${r.category}</span>`;
-    const idx  = allData.indexOf(r);
+    const tb  = r.income>0 ? `<span class="bdg bdg-i">รายรับ</span>` : `<span class="bdg bdg-e">รายจ่าย</span>`;
+    const cb  = `<span class="bdg" style="background:${col.light};color:${col.dark}">${r.category}</span>`;
+    const idx = allData.indexOf(r);
+
+    // [NEW] แสดง link รูป
+    const imgCell = r.fileUrl
+      ? `<a href="${r.fileUrl}" target="_blank" title="ดูรูป" style="font-size:16px;text-decoration:none;">📷</a>`
+      : '<span style="color:var(--text3);font-size:11px;">—</span>';
+
     return `<tr>
       <td class="edit-cell" style="color:var(--text2);white-space:nowrap" onclick="editCell(this,${idx},'date')">${dStr}</td>
       <td class="edit-cell" onclick="editCell(this,${idx},'item')">${r.item} ${tb}</td>
       <td class="edit-cell" onclick="editCell(this,${idx},'category')">${cb}</td>
       <td class="r edit-cell" style="color:var(--green)" onclick="editCell(this,${idx},'income')">${r.income ? fmt(r.income) : '—'}</td>
       <td class="r edit-cell" style="color:var(--red)"   onclick="editCell(this,${idx},'expense')">${r.expense ? fmt(r.expense) : '—'}</td>
+      <td class="r">${imgCell}</td>
       <td class="r"><button class="del-btn" onclick="deleteRow(${idx})" title="ลบ"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg></button></td>
     </tr>`;
   }).join('');
 }
 
-/* ══════════════════════════════════════════════════
-   DELETE ROW — ใช้ ID เป็นตัวระบุแถว
-   ══════════════════════════════════════════════════ */
-async function deleteRow(idx) {
-  const r = allData[idx];
-  if (!r) return;
-  if (!confirm(`ลบ "${r.item || 'รายการนี้'}" ออก?`)) return;
-  allData.splice(idx, 1);
-  render();
-  await api({ action:'delete', id:r.id, date:r.date, item:r.item, category:r.category });
-}
 
-/* ══════════════════════════════════════════════════
-   EDIT CELL — inline edit แล้ว sync ด้วย ID
-   ══════════════════════════════════════════════════ */
-function editCell(td, idx, field) {
-  const r = allData[idx];
-  if (!r) return;
-  let input;
-  if (field === 'category') {
-    input = document.createElement('select');
-    input.className = 'edit-select';
-    Object.keys(CAT_COLORS).forEach(cat => {
-      const op = document.createElement('option');
-      op.value=cat; op.textContent=cat;
-      if (cat===r.category) op.selected=true;
-      input.appendChild(op);
-    });
-  } else if (field === 'date') {
-  input = document.createElement('input');
-  input.className='edit-input'; input.type='date';
-  input.value = r.date; // YYYY-MM-DD
-} else {
-    input = document.createElement('input');
-    input.className='edit-input';
-    input.type = (field==='income'||field==='expense') ? 'number' : 'text';
-    input.value = field==='income' ? r.income : field==='expense' ? r.expense : r.item;
-  }
-  td.innerHTML=''; td.appendChild(input);
-  input.focus(); if(input.select) input.select();
-
-  async function save() {
-    const val = input.value.trim();
-    if (field==='date') {
-  // เก็บเวลาเดิมไว้ เปลี่ยนแค่วันที่
-  const oldTime = r.datetime ? r.datetime.slice(11) : '00:00:00';
-  r.date = (val || r.date);
-  r.datetimeFull = val + 'T' + oldTime + '+07:00';
-}
-    else if (field==='item')     r.item     = val || r.item;
-    else if (field==='category') r.category = val;
-    else if (field==='income')   { r.income=parseFloat(val)||0; if(r.income>0) r.expense=0; }
-    else if (field==='expense')  { r.expense=parseFloat(val)||0; if(r.expense>0) r.income=0; }
-    render();
-    // sync ไปที่ Sheet ด้วย ID
-    await api({
-      action:'update', id:r.id,
-      date:r.date, item:r.item, category:r.category,
-      income:r.income, expense:r.expense
-    });
-  }
-  input.addEventListener('blur', save);
-  input.addEventListener('keydown', e => {
-    if (e.key==='Enter') { e.preventDefault(); input.blur(); }
-    if (e.key==='Escape') render();
-  });
-}
 
 /* ══════════════════════════════════════════════════
    ADD ROW
@@ -650,13 +708,16 @@ function saveCat() {
 }
 function deleteCat() {
   if (!editingCat) return;
-  if (!confirm(`ลบหมวด "${editingCat}" ออก?`)) return;
-  delete CAT_COLORS[editingCat];
+  if (!confirm(`ลบหมวด "${editingCat}" ออก?\nรายการในหมวดนี้จะถูกย้ายไป "${FALLBACK_CAT}"`)) return;
+  const oldCat = editingCat;
+  delete CAT_COLORS[oldCat];
   savePalette();
-  allData.forEach(r=>{ if(r.category===editingCat) r.category='อื่นๆ'; });
+  allData.forEach(r => { if (r.category === oldCat) r.category = FALLBACK_CAT; });
   activeCats = new Set(Object.keys(CAT_COLORS));
   document.getElementById('modalBg').classList.remove('open');
   render();
+  // [NEW] sync ไป Sheet
+  api({ action:'reassignCat', from: oldCat, to: FALLBACK_CAT }).then(()=> toast('ลบหมวดหมู่แล้ว'));
 }
 document.addEventListener('keydown', e => { if(e.key==='Escape') { document.getElementById('modalBg').classList.remove('open'); document.getElementById('addRowBg').classList.remove('open'); } });
 
